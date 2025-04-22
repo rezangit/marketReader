@@ -18,27 +18,18 @@ class BitcoinPriceService:
             logger.error("API_KEY not found in environment variables")
             raise ValueError("API_KEY not found in environment variables")
         self.ts_manager = RedisTimeSeriesManager(redis_client)
+        
+        # Initialize counters
+        self.minute_counter = 1
+        self.five_min_counter = 1
+        self.fifteen_min_counter = 1
+        
         self.setup_schedules()
 
     def setup_schedules(self):
-        """Setup periodic tasks for data collection and aggregation"""
+        """Setup periodic tasks for data collection"""
         # Collect price every minute
         schedule.every().minute.at(":00").do(self.collect_price)
-        
-        # Aggregate 5-min data
-        schedule.every(5).minutes.at(":00").do(
-            self.ts_manager.aggregate_price, "5min"
-        )
-        
-        # Aggregate 15-min data
-        schedule.every(15).minutes.at(":00").do(
-            self.ts_manager.aggregate_price, "15min"
-        )
-        
-        # Aggregate hourly data
-        schedule.every().hour.at(":00").do(
-            self.ts_manager.aggregate_price, "1h"
-        )
         logger.info("Scheduled tasks setup completed")
 
     def collect_price(self) -> Optional[float]:
@@ -65,11 +56,52 @@ class BitcoinPriceService:
             price = data['data']['BTC']['quote']['USD']['price']
             if self.ts_manager.add_price(price):
                 logger.info(f"Successfully stored BTC price: ${price:,.2f}")
+                # Process aggregations based on counters
+                self._process_aggregations()
                 return price
             return None
         except Exception as e:
             logger.error(f"Error collecting price: {e}")
             return None
+
+    def _process_aggregations(self):
+        """Process aggregations using counter-based approach"""
+        logger.info(f"Minute counter: {self.minute_counter}, 5-min counter: {self.five_min_counter}, 15-min counter: {self.fifteen_min_counter}")
+        
+        # Increment minute counter
+        self.minute_counter += 1
+        
+        # Check if we have 5 minutes worth of data
+        if self.minute_counter > 5:
+            entries = self.ts_manager.get_last_n('btc:price:minute', 5)
+            if len(entries) == 5:
+                logger.info("Creating 5-minute aggregation")
+                self.ts_manager.aggregate_price("5min", entries)
+            
+            # Reset minute counter and increment 5-min counter
+            self.minute_counter = 1
+            self.five_min_counter += 1
+            
+            # Check if we have 3 5-minute periods (15 minutes worth of data)
+            if self.five_min_counter > 3:
+                entries = self.ts_manager.get_last_n('btc:price:minute', 15)
+                if len(entries) == 15:
+                    logger.info("Creating 15-minute aggregation")
+                    self.ts_manager.aggregate_price("15min", entries)
+                
+                # Reset 5-min counter and increment 15-min counter
+                self.five_min_counter = 1
+                self.fifteen_min_counter += 1
+                
+                # Check if we have 4 15-minute periods (1 hour worth of data)
+                if self.fifteen_min_counter > 4:
+                    entries = self.ts_manager.get_last_n('btc:price:minute', 60)
+                    if len(entries) == 60:
+                        logger.info("Creating hourly aggregation")
+                        self.ts_manager.aggregate_price("1h", entries)
+                    
+                    # Reset 15-min counter
+                    self.fifteen_min_counter = 1
 
     def run(self):
         """Run the service indefinitely"""
