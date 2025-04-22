@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis/redis-stack:latest
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf --loadmodule /opt/redis-stack/lib/redisearch.so --loadmodule /opt/redis-stack/lib/redistimeseries.so
+    restart: always
+    networks:
+      - btc_price_net
+
+  price_tracker:
+    build: .
+    depends_on:
+      - redis
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=mypassword
+    restart: always
+    networks:
+      - btc_price_net
+
+networks:
+  btc_price_net:
+    driver: bridge
+
+volumes:
+  redis_data:
+    driver: local
